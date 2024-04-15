@@ -1,0 +1,121 @@
+#include <WiFiNINA.h> // Include WiFiNINA library for WiFi connectivity
+#include <PubSubClient.h> // Include PubSubClient library for MQTT communication
+#define TRIGGER_PIN 2 // Define the trigger pin for the ultrasonic sensor
+#define ECHO_PIN 3 // Define the echo pin for the ultrasonic sensor
+
+// Update these with values suitable for your network and MQTT broker.
+const char* ssid = "TP-Link_729D"; // WiFi SSID
+const char* password = "tplink123"; // WiFi password
+const char* mqtt_server = "broker.emqx.io"; // MQTT broker server address
+const int mqtt_port = 1883; // MQTT port for non-secure connections
+const char* topic = "wave"; // MQTT topic for distance change
+const char* pat_topic = "pat"; // MQTT topic for special pattern
+
+WiFiClient wifiClient; // Create a WiFi client instance
+PubSubClient client(wifiClient); // Create a MQTT client instance using the WiFi client
+unsigned long lastMsg = 0; // Initialize variable to store the timestamp of the last message
+#define MSG_BUFFER_SIZE (50) // Define the buffer size for MQTT messages
+char msg[MSG_BUFFER_SIZE]; // Define a character array to store MQTT messages
+int value = 0; // Initialize variable to store the sensor value
+
+long previousDistance = 0; // Initialize variable to store the previous distance measured by the ultrasonic sensor
+const int DISTANCE_THRESHOLD = 10; // Set the distance threshold for detecting changes in distance
+
+void setup_wifi() {
+  delay(10); // Delay for stability
+  Serial.println(); // Print a new line
+  Serial.print("Connecting to "); // Print message
+  Serial.println(ssid); // Print WiFi SSID
+
+  WiFi.begin(ssid, password); // Connect to WiFi network
+
+  while (WiFi.status() != WL_CONNECTED) { // Wait until WiFi is connected
+    delay(500); // Delay for stability
+    Serial.print("."); // Print a dot to indicate connection progress
+  }
+
+  Serial.println(""); // Print a new line
+  Serial.println("WiFi connected"); // Print message
+  Serial.println("IP address: "); // Print message
+  Serial.println(WiFi.localIP()); // Print local IP address
+}
+
+void blinkLED(int times) {
+  for (int i = 0; i < times; i++) { // Loop to blink LED specified number of times
+    digitalWrite(LED_BUILTIN, LOW); // Turn the LED on
+    delay(500); // Delay
+    digitalWrite(LED_BUILTIN, HIGH); // Turn the LED off
+    delay(500); // Delay
+  }
+}
+
+long getDistance() {
+  digitalWrite(TRIGGER_PIN, LOW); // Set trigger pin to LOW
+  delayMicroseconds(2); // Delay for stability
+  digitalWrite(TRIGGER_PIN, HIGH); // Set trigger pin to HIGH
+  delayMicroseconds(10); // Delay for stability
+  digitalWrite(TRIGGER_PIN, LOW); // Set trigger pin to LOW
+ 
+  long duration = pulseIn(ECHO_PIN, HIGH); // Measure pulse duration
+  long distance = duration * 0.034 / 2; // Calculate distance in centimeters
+ 
+  return distance; // Return the calculated distance
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.println("Message received."); // Print message
+  if (strcmp(topic, pat_topic) == 0) { // Check if the received message is for the "pat" topic
+    blinkLED(5); // Blink LED 5 times for "pat" handler
+  } else { // If the received message is not for the "pat" topic
+    blinkLED(3); // Blink LED 3 times for "distance/change" handler
+  }
+}
+
+void reconnect() {
+  while (!client.connected()) { // Loop until connected to MQTT broker
+    Serial.print("Attempting MQTT connection..."); // Print message
+    String clientId = "nano33iot-client-" + String(random(0xffff), HEX); // Generate a random client ID
+    if (client.connect(clientId.c_str())) { // Attempt to connect to MQTT broker with generated client ID
+      Serial.println("connected"); // Print message
+      client.subscribe(topic); // Subscribe to "wave" topic
+      client.subscribe(pat_topic); // Subscribe to "pat" topic
+    } else { // If connection attempt failed
+      Serial.print("failed, rc="); // Print message
+      Serial.print(client.state()); // Print MQTT client state
+      Serial.println(" try again in 5 seconds"); // Print message
+      delay(5000); // Wait 5 seconds before retrying connection
+    }
+  }
+}
+
+void setup() {
+  pinMode(LED_BUILTIN, OUTPUT); // Set LED pin as output
+  pinMode(TRIGGER_PIN, OUTPUT); // Set trigger pin as output
+  pinMode(ECHO_PIN, INPUT); // Set echo pin as input
+  Serial.begin(9600); // Initialize serial communication
+  setup_wifi(); // Setup WiFi connection
+  client.setServer(mqtt_server, mqtt_port); // Set MQTT broker and port
+  client.setCallback(callback); // Set callback function for incoming messages
+}
+
+void loop() {
+  if (!client.connected()) { // If not connected to MQTT broker
+    reconnect(); // Reconnect to MQTT broker
+  }
+  client.loop(); // Maintain MQTT connection
+
+  unsigned long now = millis(); // Get current time
+  if (now - lastMsg > 2000) { // If it's been more than 2 seconds since last message
+    lastMsg = now; // Update last message timestamp
+    long currentDistance = getDistance(); // Get current distance from ultrasonic sensor
+    if (currentDistance <= 150 && abs(currentDistance - previousDistance) > DISTANCE_THRESHOLD) { // If distance change is detected
+      snprintf(msg, MSG_BUFFER_SIZE, "Wave Detected. Blink LED 3 times."); // Format message
+      Serial.println(msg); // Print message
+      client.publish(topic, msg); // Publish message to "wave" topic
+      client.publish(pat_topic, msg); // Publish message to "pat" topic
+    }
+    Serial.print("Distance: "); // Print message
+    Serial.println(currentDistance); // Print current distance
+    previousDistance = currentDistance; // Update previous distance
+  }
+}
